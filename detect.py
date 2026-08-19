@@ -41,8 +41,8 @@ from ultralytics import YOLO
 
 # BGR colors (OpenCV convention) per class, used for box/label drawing
 CLASS_COLORS = {
-    "fire": (0, 0, 255),      # red
-    "smoke": (128, 128, 128),  # gray
+    "fire": (255, 255, 0),  # cyan
+    "smoke": (255, 0, 0),  # blue
 }
 DEFAULT_COLOR = (0, 255, 0)
 

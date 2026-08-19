@@ -82,7 +82,38 @@ def infer(frame, confidence):
             "confidence": round(float(box.conf[0]), 3),
             "box": [round(float(v), 1) for v in box.xyxy[0].tolist()],
         })
-    return detections, result.plot()
+    annotated = frame.copy()
+    colors = {
+        "fire": (255, 255, 0),  # cyan in BGR
+        "smoke": (255, 0, 0),  # blue in BGR
+    }
+    for detection in detections:
+        x1, y1, x2, y2 = map(int, detection["box"])
+        color = colors.get(detection["label"].lower(), (0, 255, 0))
+        label = f"{detection['label'].upper()} {detection['confidence']:.2f}"
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 3)
+        (text_width, text_height), _ = cv2.getTextSize(
+            label, cv2.FONT_HERSHEY_SIMPLEX, 0.65, 2
+        )
+        label_top = max(0, y1 - text_height - 10)
+        cv2.rectangle(
+            annotated,
+            (x1, label_top),
+            (x1 + text_width + 10, y1),
+            color,
+            -1,
+        )
+        cv2.putText(
+            annotated,
+            label,
+            (x1 + 5, max(text_height + 2, y1 - 6)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.65,
+            (0, 0, 0),
+            2,
+            cv2.LINE_AA,
+        )
+    return detections, annotated
 
 
 @app.get("/api/health")

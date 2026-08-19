@@ -23,12 +23,14 @@ export default function App() {
   const [monitoring, setMonitoring] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(false);
   const videoRef = useRef(null);
+  const detectionCanvasRef = useRef(null);
   const streamRef = useRef(null);
   const monitorRef = useRef(false);
   const busyRef = useRef(false);
   const fpsRef = useRef({ frames: 0, startedAt: 0 });
   const audioContextRef = useRef(null);
   const lastSoundAtRef = useRef(0);
+  const soundEnabledRef = useRef(false);
 
   const loadAlerts = async () => {
     try {
@@ -54,6 +56,46 @@ export default function App() {
       videoRef.current.srcObject = streamRef.current;
     }
   }, [cameraOn]);
+
+  useEffect(() => {
+    if (!cameraOn) return undefined;
+    let animationFrame;
+
+    const drawLiveAnalysis = () => {
+      const video = videoRef.current;
+      const canvas = detectionCanvasRef.current;
+      if (video?.videoWidth && canvas) {
+        const context = canvas.getContext("2d");
+        if (
+          canvas.width !== video.videoWidth ||
+          canvas.height !== video.videoHeight
+        ) {
+          canvas.width = video.videoWidth;
+          canvas.height = video.videoHeight;
+        }
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+        result?.detections.forEach((detection) => {
+          const [x1, y1, x2, y2] = detection.box;
+          const isFire = detection.label.toLowerCase() === "fire";
+          const boxColor = isFire ? "#00ffff" : "#006eff";
+          context.strokeStyle = boxColor;
+          context.lineWidth = Math.max(3, canvas.width / 320);
+          context.strokeRect(x1, y1, x2 - x1, y2 - y1);
+          context.font = `700 ${Math.max(16, canvas.width / 55)}px Manrope`;
+          const label = `${detection.label.toUpperCase()} ${Math.round(detection.confidence * 100)}%`;
+          const labelWidth = context.measureText(label).width + 16;
+          context.fillStyle = boxColor;
+          context.fillRect(x1, Math.max(0, y1 - 32), labelWidth, 32);
+          context.fillStyle = "#071312";
+          context.fillText(label, x1 + 8, Math.max(22, y1 - 9));
+        });
+      }
+      animationFrame = window.requestAnimationFrame(drawLiveAnalysis);
+    };
+
+    animationFrame = window.requestAnimationFrame(drawLiveAnalysis);
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [cameraOn, result]);
 
   useEffect(() => {
     if (!monitoring || !streamUrl) return undefined;
@@ -153,6 +195,7 @@ export default function App() {
           : existingContext;
       audioContextRef.current = audioContext;
       await audioContext.resume();
+      soundEnabledRef.current = true;
       setSoundEnabled(true);
       if (playTestTone) playDetectionAlert(audioContext, true);
       return true;
@@ -164,6 +207,7 @@ export default function App() {
 
   async function toggleSound() {
     if (soundEnabled) {
+      soundEnabledRef.current = false;
       setSoundEnabled(false);
       setStatus("Sound alerts muted.");
       return;
@@ -177,7 +221,7 @@ export default function App() {
     audioContext = audioContextRef.current,
     force = false,
   ) {
-    if ((!soundEnabled && !force) || !audioContext) return;
+    if ((!soundEnabledRef.current && !force) || !audioContext) return;
     const now = performance.now();
     if (!force && now - lastSoundAtRef.current < 5000) return;
     lastSoundAtRef.current = now;
@@ -286,7 +330,7 @@ export default function App() {
           0.85,
         );
       }
-      window.setTimeout(next, 1500);
+      window.setTimeout(next, 500);
     };
 
     next();
@@ -387,7 +431,30 @@ export default function App() {
                   alt="Live annotated camera feed"
                 />
               ) : cameraOn ? (
-                <video ref={videoRef} autoPlay playsInline muted />
+                <div className="browser-stage">
+                  <video ref={videoRef} autoPlay playsInline muted />
+                  <canvas
+                    ref={detectionCanvasRef}
+                    className="detection-canvas"
+                    aria-label="Live camera with detection bounding boxes"
+                  />
+                </div>
+              ) : result ? (
+                <div className="result-stage">
+                  <img
+                    className="result-preview"
+                    src={result.preview}
+                    alt="Annotated detection result"
+                  />
+                  <div className="result-overlay">
+                    <span
+                      className={`status-tag ${danger ? "danger" : "safe"}`}
+                    >
+                      {danger ? "DANGER DETECTED" : "CLEAR"}
+                    </span>
+                    <span>{result.processed_at}</span>
+                  </div>
+                </div>
               ) : (
                 <div className="empty-state">
                   <div className="camera-icon">⌁</div>
@@ -504,59 +571,7 @@ export default function App() {
           </div>
         </div>
 
-        <aside className="sidebar">
-          <div className="panel analysis-panel">
-            <div className="panel-header">
-              <div>
-                <span className="eyebrow">ANALYSIS RESULT</span>
-                <h3>Incident review</h3>
-              </div>
-              {result && (
-                <span className={`status-tag ${danger ? "danger" : "safe"}`}>
-                  {danger ? "ATTENTION" : "CLEAR"}
-                </span>
-              )}
-            </div>
-
-            {result ? (
-              <>
-                <img
-                  src={result.preview}
-                  alt="Annotated detection"
-                  className="result-preview"
-                />
-                <div className="detections">
-                  {result.detections.length ? (
-                    result.detections.map((d, i) => (
-                      <div
-                        key={i}
-                        className={`detection-item ${d.label.toLowerCase()}`}
-                      >
-                        <div>
-                          <strong>{d.label}</strong>
-                          <span>
-                            {Math.round(d.confidence * 100)}% confidence
-                          </span>
-                        </div>
-                        <span className="confidence-badge">
-                          {Math.round(d.confidence * 100)}%
-                        </span>
-                      </div>
-                    ))
-                  ) : (
-                    <p className="muted-copy">No detections above threshold.</p>
-                  )}
-                </div>
-              </>
-            ) : (
-              <div className="empty-state compact">
-                <div className="radar">◌</div>
-                <h3>Awaiting scan</h3>
-                <p>{status}</p>
-              </div>
-            )}
-          </div>
-
+        <section className="workspace-lower">
           <div className="panel status-panel">
             <div className="panel-header compact-header">
               <div>
@@ -593,58 +608,38 @@ export default function App() {
             <div className="panel-header compact-header">
               <div>
                 <span className="eyebrow">INCIDENT LOG</span>
-                <h3>Recent alerts</h3>
+                <h3>Latest six detections</h3>
               </div>
+              <span className="history-count">{alerts.length} saved</span>
             </div>
 
-            {alerts[0]?.snapshot && (
-              <div className="latest-alert">
-                <div className="latest-alert-heading">
-                  <div>
-                    <span className="eyebrow">LATEST CAPTURE</span>
-                    <h4>{alerts[0].class} detected</h4>
-                  </div>
-                  <span>{alerts[0].timestamp}</span>
-                </div>
-                <img
-                  src={`${API}/api/alerts/${encodeURIComponent(alerts[0].snapshot)}`}
-                  alt={`Latest ${alerts[0].class} detection`}
-                />
-                <div className="latest-alert-meta">
-                  <span>
-                    {alerts[0].count} object
-                    {Number(alerts[0].count) === 1 ? "" : "s"}
-                  </span>
-                  <strong>
-                    {Math.round(Number(alerts[0].max_confidence) * 100)}%
-                    confidence
-                  </strong>
-                </div>
-              </div>
-            )}
-
             {alerts.length ? (
-              <div className="table">
-                <div className="row headings">
-                  <span>TIME</span>
-                  <span>TYPE</span>
-                  <span>COUNT</span>
-                  <span>CONF.</span>
-                </div>
-                {alerts.slice(0, 6).map((a, i) => (
-                  <div className="row" key={i}>
-                    <span>{a.timestamp}</span>
-                    <span className={a.class}>{a.class}</span>
-                    <span>{a.count}</span>
-                    <span>{Math.round(Number(a.max_confidence) * 100)}%</span>
-                  </div>
+              <div className="alert-gallery">
+                {alerts.slice(0, 6).map((alert, i) => (
+                  <article
+                    className="alert-card"
+                    key={`${alert.snapshot}-${i}`}
+                  >
+                    <img
+                      src={`${API}/api/alerts/${encodeURIComponent(alert.snapshot)}`}
+                      alt={`${alert.class} detection at ${alert.timestamp}`}
+                    />
+                    <div className="alert-card-info">
+                      <strong className={alert.class}>{alert.class}</strong>
+                      <span>{alert.timestamp}</span>
+                      <b>{Math.round(Number(alert.max_confidence) * 100)}%</b>
+                    </div>
+                  </article>
                 ))}
               </div>
             ) : (
-              <p className="muted-copy">No saved alerts yet.</p>
+              <div className="empty-history">
+                <span className="radar">◌</span>
+                <p>No detected images yet.</p>
+              </div>
             )}
           </div>
-        </aside>
+        </section>
       </section>
     </main>
   );
