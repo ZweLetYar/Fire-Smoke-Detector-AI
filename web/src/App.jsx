@@ -17,11 +17,13 @@ export default function App() {
   const [devices, setDevices] = useState([]);
   const [networkSource, setNetworkSource] = useState("");
   const [streamUrl, setStreamUrl] = useState("");
+  const [monitorFps, setMonitorFps] = useState(0);
   const [monitoring, setMonitoring] = useState(false);
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const monitorRef = useRef(false);
   const busyRef = useRef(false);
+  const fpsRef = useRef({ frames: 0, startedAt: 0 });
 
   const loadAlerts = async () => {
     try {
@@ -30,11 +32,13 @@ export default function App() {
       /* API may not yet be running */
     }
   };
+
   useEffect(() => {
     loadAlerts();
     listCameras();
     return stopCamera;
   }, []);
+
   useEffect(() => {
     if (cameraOn && videoRef.current && streamRef.current) {
       videoRef.current.srcObject = streamRef.current;
@@ -48,7 +52,10 @@ export default function App() {
     monitorRef.current = false;
     setMonitoring(false);
     setStreamUrl("");
+    setMonitorFps(0);
+    fpsRef.current = { frames: 0, startedAt: 0 };
   }
+
   async function listCameras() {
     if (!navigator.mediaDevices?.enumerateDevices) return;
     const cameras = (await navigator.mediaDevices.enumerateDevices()).filter(
@@ -57,6 +64,7 @@ export default function App() {
     setDevices(cameras);
     if (!deviceId && cameras[0]) setDeviceId(cameras[0].deviceId);
   }
+
   async function startCamera() {
     if (!navigator.mediaDevices?.getUserMedia) {
       setStatus(
@@ -64,9 +72,8 @@ export default function App() {
       );
       return;
     }
+
     try {
-      // Requesting any available camera works on laptops and desktops. Requiring
-      // an "environment" camera fails on devices that only have a front webcam.
       const video = deviceId ? { deviceId: { exact: deviceId } } : true;
       const stream = await navigator.mediaDevices.getUserMedia({
         video,
@@ -93,13 +100,16 @@ export default function App() {
       );
     }
   }
+
   async function analyze(blob, name = "camera.jpg") {
     if (busyRef.current) return;
     busyRef.current = true;
     setLoading(true);
     setStatus("Analyzing image with the fire and smoke model…");
+
     const data = new FormData();
     data.append("image", blob, name);
+
     try {
       const response = await fetch(
         `${API}/api/detect?confidence=${confidence}`,
@@ -107,6 +117,7 @@ export default function App() {
       );
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.detail || "Analysis failed");
+
       setResult(payload);
       setStatus(
         payload.detections.length
@@ -121,23 +132,37 @@ export default function App() {
       busyRef.current = false;
     }
   }
+
   function capture() {
     const video = videoRef.current;
     if (!video?.videoWidth) return;
+
     const canvas = document.createElement("canvas");
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
     canvas.getContext("2d").drawImage(video, 0, 0);
     canvas.toBlob((blob) => analyze(blob), "image/jpeg", 0.9);
   }
+
   function startBrowserMonitoring() {
     if (!cameraOn) return;
     monitorRef.current = true;
     setMonitoring(true);
+    fpsRef.current = { frames: 0, startedAt: performance.now() };
     setStatus("Live monitoring is active. Alerts are saved automatically.");
+
     const next = () => {
       if (!monitorRef.current) return;
+
       const video = videoRef.current;
+      if (video?.videoWidth) {
+        fpsRef.current.frames += 1;
+        const elapsed = performance.now() - fpsRef.current.startedAt;
+        if (elapsed >= 1000) {
+          setMonitorFps((fpsRef.current.frames * 1000) / elapsed);
+          fpsRef.current = { frames: 0, startedAt: performance.now() };
+        }
+      }
       if (video?.videoWidth && !busyRef.current) {
         const canvas = document.createElement("canvas");
         canvas.width = video.videoWidth;
@@ -151,13 +176,16 @@ export default function App() {
       }
       window.setTimeout(next, 1500);
     };
+
     next();
   }
+
   function startNetworkMonitoring() {
     if (!networkSource.trim()) {
       setStatus("Enter the ESP32-CAM, RTSP, or camera stream URL first.");
       return;
     }
+
     stopCamera();
     setStreamUrl(
       `${API}/api/stream?source=${encodeURIComponent(networkSource.trim())}&confidence=${confidence}`,
@@ -167,6 +195,7 @@ export default function App() {
       "Live network camera monitoring is active. Alerts are saved automatically.",
     );
   }
+
   function chooseFile(event) {
     const selected = event.target.files?.[0];
     if (!selected) return;
@@ -174,229 +203,327 @@ export default function App() {
     setResult(null);
     setStatus(`Ready to inspect ${selected.name}.`);
   }
+
   const danger = result?.detections.some((d) =>
     ["fire", "smoke"].includes(d.label.toLowerCase()),
   );
 
   return (
-    <main>
-      <header>
-        <div className="brand">
-          <span>◈</span> FIREWATCH <small>AI</small>
+    <main className="app-shell">
+      <header className="topbar">
+        <div className="brand" aria-label="FireWatch AI brand">
+          <span>◈</span>
+          <div>
+            FIREWATCH <small>AI</small>
+          </div>
         </div>
-        <div className="system">
-          <i></i> SYSTEM ONLINE
+
+        <div className="topbar-actions">
+          <div className="status-pill online">
+            <i className="status-dot" />
+            SYSTEM ONLINE
+          </div>
+          <button className="ghost-button" onClick={loadAlerts}>
+            Refresh alerts
+          </button>
         </div>
       </header>
-      <section className="hero">
-        <p className="eyebrow">REAL-TIME EARLY WARNING</p>
-        <h1>See danger before it spreads.</h1>
-        <p>
-          Inspect camera frames and images with your trained fire and smoke
-          detection model.
-        </p>
-      </section>
-      <section className="workspace">
-        <div className="panel capture">
-          <div className="panel-title">
-            <span>LIVE MONITORING</span>
-            <b>{monitoring ? "● MONITORING" : "STANDBY"}</b>
-          </div>
-          {streamUrl ? (
-            <img
-              className="live-stream"
-              src={streamUrl}
-              alt="Live annotated camera feed"
-            />
-          ) : cameraOn ? (
-            <video ref={videoRef} autoPlay playsInline muted />
-          ) : (
-            <div className="empty">
-              <div className="camera-icon">⌁</div>
-              <h3>Visual monitoring</h3>
-              <p>Choose a camera source and start live monitoring.</p>
-            </div>
-          )}
-          <div className="source-controls">
-            <label>
-              Camera source
-              <select
-                value={sourceType}
-                onChange={(e) => {
-                  stopCamera();
-                  setSourceType(e.target.value);
-                }}
+
+      <section className="dashboard-grid">
+        <div className="monitor-column">
+          <div className="panel monitor-panel">
+            <div className="panel-header">
+              <div>
+                <span className="eyebrow">LIVE CITY MONITOR</span>
+                <h2>Surveillance feed</h2>
+              </div>
+              <span
+                className={`monitor-state ${monitoring ? "active" : "idle"}`}
               >
-                <option value="browser">This computer's camera</option>
-                <option value="webcam">Computer webcam index</option>
-                <option value="esp32">ESP32-CAM / IP camera URL</option>
-              </select>
-            </label>
-            {sourceType === "browser" && (
-              <label>
-                Available camera
-                <select
-                  value={deviceId}
-                  onChange={(e) => setDeviceId(e.target.value)}
+                {monitoring ? "MONITORING" : "STANDBY"}
+              </span>
+            </div>
+
+            <div className="monitor-stage">
+              {(monitoring || streamUrl) && (
+                <div
+                  className="monitor-fps"
+                  aria-label="Monitoring frames per second"
                 >
-                  {devices.map((device, i) => (
-                    <option key={device.deviceId} value={device.deviceId}>
-                      {device.label || `Camera ${i + 1}`}
-                    </option>
-                  ))}
+                  <i className="status-dot" />
+                  {streamUrl ? "LIVE FEED" : "ANALYSIS"}{" "}
+                  <strong>
+                    {streamUrl
+                      ? "shown on feed"
+                      : `${monitorFps.toFixed(1)} FPS`}
+                  </strong>
+                </div>
+              )}
+              {streamUrl ? (
+                <img
+                  className="live-stream"
+                  src={streamUrl}
+                  alt="Live annotated camera feed"
+                />
+              ) : cameraOn ? (
+                <video ref={videoRef} autoPlay playsInline muted />
+              ) : (
+                <div className="empty-state">
+                  <div className="camera-icon">⌁</div>
+                  <h3>Visual monitoring</h3>
+                  <p>Choose a camera source and start live monitoring.</p>
+                </div>
+              )}
+            </div>
+
+            <div className="source-controls">
+              <label>
+                Camera source
+                <select
+                  value={sourceType}
+                  onChange={(e) => {
+                    stopCamera();
+                    setSourceType(e.target.value);
+                  }}
+                >
+                  <option value="browser">This computer's camera</option>
+                  <option value="webcam">Computer webcam index</option>
+                  <option value="esp32">ESP32-CAM / IP camera URL</option>
                 </select>
               </label>
-            )}
-            {sourceType === "webcam" && (
-              <label>
-                Webcam index
-                <input
-                  value={networkSource}
-                  onChange={(e) => setNetworkSource(e.target.value)}
-                  placeholder="0"
-                  inputMode="numeric"
-                />
-              </label>
-            )}
-            {sourceType === "esp32" && (
-              <label>
-                Stream URL
-                <input
-                  value={networkSource}
-                  onChange={(e) => setNetworkSource(e.target.value)}
-                  placeholder="http://192.168.1.50:81/stream"
-                />
-              </label>
-            )}
-          </div>
-          <div className="actions">
-            <label className="button secondary">
-              Upload image
-              <input
-                type="file"
-                accept="image/*"
-                onChange={chooseFile}
-                hidden
-              />
-            </label>
-            {sourceType === "browser" ? (
-              cameraOn ? (
-                <>
-                  <button
-                    className="button"
-                    onClick={monitoring ? stopCamera : startBrowserMonitoring}
+
+              {sourceType === "browser" && (
+                <label>
+                  Available camera
+                  <select
+                    value={deviceId}
+                    onChange={(e) => setDeviceId(e.target.value)}
                   >
-                    {monitoring ? "Stop monitoring" : "Start monitoring"}
+                    {devices.map((device, i) => (
+                      <option key={device.deviceId} value={device.deviceId}>
+                        {device.label || `Camera ${i + 1}`}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              )}
+
+              {sourceType === "webcam" && (
+                <label>
+                  Webcam index
+                  <input
+                    value={networkSource}
+                    onChange={(e) => setNetworkSource(e.target.value)}
+                    placeholder="0"
+                    inputMode="numeric"
+                  />
+                </label>
+              )}
+
+              {sourceType === "esp32" && (
+                <label>
+                  Stream URL
+                  <input
+                    value={networkSource}
+                    onChange={(e) => setNetworkSource(e.target.value)}
+                    placeholder="http://192.168.1.50:81/stream"
+                  />
+                </label>
+              )}
+            </div>
+
+            <div className="actions">
+              <label className="button secondary">
+                Upload image
+                <input
+                  type="file"
+                  accept="image/*"
+                  onChange={chooseFile}
+                  hidden
+                />
+              </label>
+
+              {sourceType === "browser" ? (
+                cameraOn ? (
+                  <>
+                    <button
+                      className="button primary"
+                      onClick={monitoring ? stopCamera : startBrowserMonitoring}
+                    >
+                      {monitoring ? "Stop monitoring" : "Start monitoring"}
+                    </button>
+                    <button className="text-button" onClick={capture}>
+                      Analyze one frame
+                    </button>
+                  </>
+                ) : (
+                  <button className="button primary" onClick={startCamera}>
+                    Connect camera
                   </button>
-                  <button className="text-button" onClick={capture}>
-                    Analyze one frame
-                  </button>
-                </>
+                )
               ) : (
-                <button className="button" onClick={startCamera}>
-                  Connect camera
+                <button
+                  className="button primary"
+                  onClick={monitoring ? stopCamera : startNetworkMonitoring}
+                >
+                  {monitoring ? "Stop monitoring" : "Start monitoring"}
                 </button>
-              )
-            ) : (
+              )}
+            </div>
+
+            {file && (
               <button
-                className="button"
-                onClick={monitoring ? stopCamera : startNetworkMonitoring}
+                disabled={loading}
+                className="analyze"
+                onClick={() => analyze(file, file.name)}
               >
-                {monitoring ? "Stop monitoring" : "Start monitoring"}
+                {loading ? "ANALYZING…" : "ANALYZE SELECTED IMAGE"}
               </button>
             )}
           </div>
-          {file && (
-            <button
-              disabled={loading}
-              className="analyze"
-              onClick={() => analyze(file, file.name)}
-            >
-              {loading ? "ANALYZING…" : "ANALYZE SELECTED IMAGE"}
-            </button>
-          )}
         </div>
-        <div className="panel result">
-          <div className="panel-title">
-            <span>ANALYSIS RESULT</span>
-            {result && (
-              <b className={danger ? "danger" : "safe"}>
-                {danger ? "ATTENTION REQUIRED" : "CLEAR"}
-              </b>
+
+        <aside className="sidebar">
+          <div className="panel analysis-panel">
+            <div className="panel-header">
+              <div>
+                <span className="eyebrow">ANALYSIS RESULT</span>
+                <h3>Incident review</h3>
+              </div>
+              {result && (
+                <span className={`status-tag ${danger ? "danger" : "safe"}`}>
+                  {danger ? "ATTENTION" : "CLEAR"}
+                </span>
+              )}
+            </div>
+
+            {result ? (
+              <>
+                <img
+                  src={result.preview}
+                  alt="Annotated detection"
+                  className="result-preview"
+                />
+                <div className="detections">
+                  {result.detections.length ? (
+                    result.detections.map((d, i) => (
+                      <div
+                        key={i}
+                        className={`detection-item ${d.label.toLowerCase()}`}
+                      >
+                        <div>
+                          <strong>{d.label}</strong>
+                          <span>
+                            {Math.round(d.confidence * 100)}% confidence
+                          </span>
+                        </div>
+                        <span className="confidence-badge">
+                          {Math.round(d.confidence * 100)}%
+                        </span>
+                      </div>
+                    ))
+                  ) : (
+                    <p className="muted-copy">No detections above threshold.</p>
+                  )}
+                </div>
+              </>
+            ) : (
+              <div className="empty-state compact">
+                <div className="radar">◌</div>
+                <h3>Awaiting scan</h3>
+                <p>{status}</p>
+              </div>
             )}
           </div>
-          {result ? (
-            <>
-              <img src={result.preview} alt="Annotated detection" />
-              <div className="detections">
-                {result.detections.length ? (
-                  result.detections.map((d, i) => (
-                    <div key={i} className={d.label.toLowerCase()}>
-                      <strong>{d.label}</strong>
-                      <span>{Math.round(d.confidence * 100)}% confidence</span>
-                    </div>
-                  ))
-                ) : (
-                  <p>No detections above threshold.</p>
-                )}
+
+          <div className="panel status-panel">
+            <div className="panel-header compact-header">
+              <div>
+                <span className="eyebrow">SYSTEM STATUS</span>
+                <h3>Detection settings</h3>
               </div>
-            </>
-          ) : (
-            <div className="empty">
-              <div className="radar">◌</div>
-              <h3>Awaiting scan</h3>
-              <p>{status}</p>
             </div>
-          )}
-        </div>
-      </section>
-      <section className="controls">
-        <div>
-          <label>
-            Detection confidence{" "}
-            <strong>{Math.round(confidence * 100)}%</strong>
-          </label>
-          <input
-            type="range"
-            min="0.05"
-            max="0.95"
-            step="0.05"
-            value={confidence}
-            onChange={(e) => setConfidence(Number(e.target.value))}
-          />
-          <small>
-            Higher values reduce false alarms but may miss subtle smoke.
-          </small>
-        </div>
-        <p className={danger ? "danger-copy" : ""}>{status}</p>
-      </section>
-      <section className="history">
-        <div className="history-head">
-          <h2>Recent incident log</h2>
-          <button className="text-button" onClick={loadAlerts}>
-            Refresh
-          </button>
-        </div>
-        {alerts.length ? (
-          <div className="table">
-            <div className="row headings">
-              <span>TIME</span>
-              <span>TYPE</span>
-              <span>COUNT</span>
-              <span>CONFIDENCE</span>
+
+            <div className="metric-box">
+              <label htmlFor="confidence-range">
+                Confidence threshold{" "}
+                <strong>{Math.round(confidence * 100)}%</strong>
+              </label>
+              <input
+                id="confidence-range"
+                type="range"
+                min="0.05"
+                max="0.95"
+                step="0.05"
+                value={confidence}
+                onChange={(e) => setConfidence(Number(e.target.value))}
+              />
+              <small>
+                Higher values reduce false alarms but may miss subtle smoke.
+              </small>
             </div>
-            {alerts.slice(0, 6).map((a, i) => (
-              <div className="row" key={i}>
-                <span>{a.timestamp}</span>
-                <span className={a.class}>{a.class}</span>
-                <span>{a.count}</span>
-                <span>{Math.round(Number(a.max_confidence) * 100)}%</span>
-              </div>
-            ))}
+
+            <p className={`status-message ${danger ? "danger-copy" : ""}`}>
+              {status}
+            </p>
           </div>
-        ) : (
-          <p className="muted">No saved alerts yet.</p>
-        )}
+
+          <div className="panel history-panel">
+            <div className="panel-header compact-header">
+              <div>
+                <span className="eyebrow">INCIDENT LOG</span>
+                <h3>Recent alerts</h3>
+              </div>
+            </div>
+
+            {alerts[0]?.snapshot && (
+              <div className="latest-alert">
+                <div className="latest-alert-heading">
+                  <div>
+                    <span className="eyebrow">LATEST CAPTURE</span>
+                    <h4>{alerts[0].class} detected</h4>
+                  </div>
+                  <span>{alerts[0].timestamp}</span>
+                </div>
+                <img
+                  src={`${API}/api/alerts/${encodeURIComponent(alerts[0].snapshot)}`}
+                  alt={`Latest ${alerts[0].class} detection`}
+                />
+                <div className="latest-alert-meta">
+                  <span>
+                    {alerts[0].count} object
+                    {Number(alerts[0].count) === 1 ? "" : "s"}
+                  </span>
+                  <strong>
+                    {Math.round(Number(alerts[0].max_confidence) * 100)}%
+                    confidence
+                  </strong>
+                </div>
+              </div>
+            )}
+
+            {alerts.length ? (
+              <div className="table">
+                <div className="row headings">
+                  <span>TIME</span>
+                  <span>TYPE</span>
+                  <span>COUNT</span>
+                  <span>CONF.</span>
+                </div>
+                {alerts.slice(0, 6).map((a, i) => (
+                  <div className="row" key={i}>
+                    <span>{a.timestamp}</span>
+                    <span className={a.class}>{a.class}</span>
+                    <span>{a.count}</span>
+                    <span>{Math.round(Number(a.max_confidence) * 100)}%</span>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="muted-copy">No saved alerts yet.</p>
+            )}
+          </div>
+        </aside>
       </section>
     </main>
   );

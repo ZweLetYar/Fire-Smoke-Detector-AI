@@ -13,12 +13,13 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from ultralytics import YOLO
 
 ROOT = Path(__file__).parent
 WEIGHTS = ROOT / "best.pt"
 ALERTS_CSV = ROOT / "runs" / "detect_output" / "alerts.csv"
+ALERTS_DIR = ALERTS_CSV.parent / "alerts"
 MODEL_LOCK = Lock()
 ALERT_LOCK = Lock()
 model = None
@@ -27,9 +28,10 @@ LAST_ALERT = {"fire": 0.0, "smoke": 0.0}
 app = FastAPI(title="Fire & Smoke Detector API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1):\d+",
     allow_methods=["*"],
     allow_headers=["*"],
+    allow_credentials=True,
 )
 
 
@@ -47,7 +49,7 @@ def save_alerts(detections, frame, cooldown=5):
     now = datetime.now()
     timestamp = now.strftime("%Y-%m-%d %H:%M:%S")
     stem = now.strftime("%Y%m%d_%H%M%S_%f")[:-3]
-    alert_dir = ALERTS_CSV.parent / "alerts"
+    alert_dir = ALERTS_DIR
     alert_dir.mkdir(parents=True, exist_ok=True)
     grouped = {}
     for item in detections:
@@ -97,6 +99,15 @@ def alerts():
     return list(reversed(rows[-30:]))
 
 
+@app.get("/api/alerts/{snapshot_name}")
+def alert_snapshot(snapshot_name: str):
+    """Serve a saved alert image without allowing access outside the alert folder."""
+    snapshot_path = ALERTS_DIR / Path(snapshot_name).name
+    if snapshot_path.name != snapshot_name or not snapshot_path.is_file():
+        raise HTTPException(404, "Alert snapshot was not found.")
+    return FileResponse(snapshot_path, media_type="image/jpeg")
+
+
 @app.post("/api/detect")
 async def detect(image: UploadFile = File(...), confidence: float = 0.6):
     if not 0.05 <= confidence <= 0.95:
@@ -135,6 +146,8 @@ def stream(source: str, confidence: float = 0.6):
         capture = cv2.VideoCapture(capture_source)
         if not capture.isOpened():
             return
+        fps_smoothed = 0.0
+        previous_time = datetime.now().timestamp()
         try:
             while True:
                 ok, frame = capture.read()
@@ -142,6 +155,20 @@ def stream(source: str, confidence: float = 0.6):
                     break
                 detections, annotated = infer(frame, confidence)
                 save_alerts(detections, annotated)
+                current_time = datetime.now().timestamp()
+                instant_fps = 1.0 / max(current_time - previous_time, 1e-6)
+                fps_smoothed = instant_fps if fps_smoothed == 0 else (0.9 * fps_smoothed + 0.1 * instant_fps)
+                previous_time = current_time
+                cv2.rectangle(annotated, (0, 0), (150, 32), (7, 13, 13), -1)
+                cv2.putText(
+                    annotated,
+                    f"LIVE  {fps_smoothed:.1f} FPS",
+                    (10, 22),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.58,
+                    (0, 230, 170),
+                    2,
+                )
                 ok, encoded = cv2.imencode(".jpg", annotated, [cv2.IMWRITE_JPEG_QUALITY, 82])
                 if ok:
                     yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + encoded.tobytes() + b"\r\n"
