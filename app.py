@@ -28,7 +28,7 @@ LAST_ALERT = {"fire": 0.0, "smoke": 0.0}
 app = FastAPI(title="Fire & Smoke Detector API")
 app.add_middleware(
     CORSMiddleware,
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1):\d+",
+    allow_origin_regex=r"https?://[^/:]+:\d+|https?://(localhost|127\.0\.0\.1|\[::1\]):\d+",
     allow_methods=["*"],
     allow_headers=["*"],
     allow_credentials=True,

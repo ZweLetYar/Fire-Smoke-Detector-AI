@@ -112,6 +112,21 @@ button {
   font-weight: 700;
 }
 
+.sound-toggle {
+  border: 1px solid rgba(255, 144, 109, 0.3);
+  background: rgba(59, 29, 24, 0.72);
+  color: #ffc1ad;
+  border-radius: 10px;
+  padding: 10px 14px;
+  font-weight: 800;
+}
+
+.sound-toggle.enabled {
+  border-color: rgba(110, 240, 167, 0.35);
+  background: rgba(24, 61, 47, 0.82);
+  color: #aef7cf;
+}
+
 .dashboard-grid {
   display: grid;
   grid-template-columns: minmax(0, 2.2fr) minmax(320px, 0.95fr);

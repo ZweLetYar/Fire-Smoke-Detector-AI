@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 
-const API = import.meta.env.VITE_API_URL || "http://localhost:8000";
+const API =
+  import.meta.env.VITE_API_URL ||
+  `${window.location.protocol}//${window.location.hostname}:8000`;
 
 export default function App() {
   const [confidence, setConfidence] = useState(0.6);
@@ -19,24 +21,32 @@ export default function App() {
   const [streamUrl, setStreamUrl] = useState("");
   const [monitorFps, setMonitorFps] = useState(0);
   const [monitoring, setMonitoring] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(false);
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const monitorRef = useRef(false);
   const busyRef = useRef(false);
   const fpsRef = useRef({ frames: 0, startedAt: 0 });
+  const audioContextRef = useRef(null);
+  const lastSoundAtRef = useRef(0);
 
   const loadAlerts = async () => {
     try {
-      setAlerts(await (await fetch(`${API}/api/alerts`)).json());
-    } catch {
-      /* API may not yet be running */
+      const response = await fetch(`${API}/api/alerts`);
+      if (!response.ok) throw new Error(`API returned ${response.status}`);
+      setAlerts(await response.json());
+    } catch (error) {
+      setStatus(`Could not load recent alerts: ${error.message}.`);
     }
   };
 
   useEffect(() => {
     loadAlerts();
     listCameras();
-    return stopCamera;
+    return () => {
+      stopCamera();
+      audioContextRef.current?.close();
+    };
   }, []);
 
   useEffect(() => {
@@ -44,6 +54,34 @@ export default function App() {
       videoRef.current.srcObject = streamRef.current;
     }
   }, [cameraOn]);
+
+  useEffect(() => {
+    if (!monitoring || !streamUrl) return undefined;
+    let latestAlertKey = "";
+
+    const checkNetworkAlerts = async () => {
+      try {
+        const response = await fetch(`${API}/api/alerts`);
+        if (!response.ok) return;
+        const latest = (await response.json())[0];
+        if (!latest) return;
+        const alertKey = `${latest.timestamp}:${latest.snapshot}`;
+        if (!latestAlertKey) {
+          latestAlertKey = alertKey;
+          return;
+        }
+        if (alertKey === latestAlertKey) return;
+        latestAlertKey = alertKey;
+        if (["fire", "smoke"].includes(latest.class.toLowerCase())) {
+          playDetectionAlert();
+        }
+      } catch {}
+    };
+
+    checkNetworkAlerts();
+    const interval = window.setInterval(checkNetworkAlerts, 2000);
+    return () => window.clearInterval(interval);
+  }, [monitoring, streamUrl, soundEnabled]);
 
   function stopCamera() {
     streamRef.current?.getTracks().forEach((track) => track.stop());
@@ -101,6 +139,68 @@ export default function App() {
     }
   }
 
+  async function activateSound(playTestTone = false) {
+    const AudioContext = window.AudioContext || window.webkitAudioContext;
+    if (!AudioContext) {
+      return false;
+    }
+
+    try {
+      const existingContext = audioContextRef.current;
+      const audioContext =
+        !existingContext || existingContext.state === "closed"
+          ? new AudioContext()
+          : existingContext;
+      audioContextRef.current = audioContext;
+      await audioContext.resume();
+      setSoundEnabled(true);
+      if (playTestTone) playDetectionAlert(audioContext, true);
+      return true;
+    } catch (error) {
+      setStatus(`Sound alerts could not start: ${error.message}.`);
+      return false;
+    }
+  }
+
+  async function toggleSound() {
+    if (soundEnabled) {
+      setSoundEnabled(false);
+      setStatus("Sound alerts muted.");
+      return;
+    }
+
+    const enabled = await activateSound(true);
+    if (enabled) setStatus("Sound alerts enabled for automatic detections.");
+  }
+
+  function playDetectionAlert(
+    audioContext = audioContextRef.current,
+    force = false,
+  ) {
+    if ((!soundEnabled && !force) || !audioContext) return;
+    const now = performance.now();
+    if (!force && now - lastSoundAtRef.current < 5000) return;
+    lastSoundAtRef.current = now;
+
+    const oscillator = audioContext.createOscillator();
+    const gain = audioContext.createGain();
+    oscillator.type = "sine";
+    oscillator.frequency.setValueAtTime(880, audioContext.currentTime);
+    oscillator.frequency.setValueAtTime(660, audioContext.currentTime + 0.16);
+    gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
+    gain.gain.exponentialRampToValueAtTime(
+      0.3,
+      audioContext.currentTime + 0.02,
+    );
+    gain.gain.exponentialRampToValueAtTime(
+      0.0001,
+      audioContext.currentTime + 0.34,
+    );
+    oscillator.connect(gain).connect(audioContext.destination);
+    oscillator.start();
+    oscillator.stop(audioContext.currentTime + 0.34);
+  }
+
   async function analyze(blob, name = "camera.jpg") {
     if (busyRef.current) return;
     busyRef.current = true;
@@ -115,10 +215,17 @@ export default function App() {
         `${API}/api/detect?confidence=${confidence}`,
         { method: "POST", body: data },
       );
-      const payload = await response.json();
+      const payload = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(payload.detail || "Analysis failed");
 
       setResult(payload);
+      if (
+        payload.detections.some((d) =>
+          ["fire", "smoke"].includes(d.label.toLowerCase()),
+        )
+      ) {
+        playDetectionAlert();
+      }
       setStatus(
         payload.detections.length
           ? `${payload.detections.length} potential hazard(s) found.`
@@ -146,6 +253,7 @@ export default function App() {
 
   function startBrowserMonitoring() {
     if (!cameraOn) return;
+    activateSound();
     monitorRef.current = true;
     setMonitoring(true);
     fpsRef.current = { frames: 0, startedAt: performance.now() };
@@ -186,6 +294,7 @@ export default function App() {
       return;
     }
 
+    activateSound();
     stopCamera();
     setStreamUrl(
       `${API}/api/stream?source=${encodeURIComponent(networkSource.trim())}&confidence=${confidence}`,
@@ -199,6 +308,7 @@ export default function App() {
   function chooseFile(event) {
     const selected = event.target.files?.[0];
     if (!selected) return;
+    activateSound();
     setFile(selected);
     setResult(null);
     setStatus(`Ready to inspect ${selected.name}.`);
@@ -225,6 +335,13 @@ export default function App() {
           </div>
           <button className="ghost-button" onClick={loadAlerts}>
             Refresh alerts
+          </button>
+          <button
+            className={`sound-toggle ${soundEnabled ? "enabled" : ""}`}
+            onClick={toggleSound}
+            aria-pressed={soundEnabled}
+          >
+            {soundEnabled ? "Sound alerts on" : "Enable sound alerts"}
           </button>
         </div>
       </header>
