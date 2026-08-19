@@ -184,21 +184,25 @@ export default function App() {
 
     const oscillator = audioContext.createOscillator();
     const gain = audioContext.createGain();
-    oscillator.type = "sine";
-    oscillator.frequency.setValueAtTime(880, audioContext.currentTime);
-    oscillator.frequency.setValueAtTime(660, audioContext.currentTime + 0.16);
-    gain.gain.setValueAtTime(0.0001, audioContext.currentTime);
-    gain.gain.exponentialRampToValueAtTime(
-      0.3,
-      audioContext.currentTime + 0.02,
-    );
-    gain.gain.exponentialRampToValueAtTime(
-      0.0001,
-      audioContext.currentTime + 0.34,
-    );
+    const startTime = audioContext.currentTime;
+    const warningLength = 2.4;
+    oscillator.type = "sawtooth";
+    gain.gain.setValueAtTime(0.0001, startTime);
+
+    // Three rising/falling warning pulses make the detection unmistakable.
+    for (let pulse = 0; pulse < 3; pulse += 1) {
+      const pulseStart = startTime + pulse * 0.8;
+      oscillator.frequency.setValueAtTime(920, pulseStart);
+      oscillator.frequency.linearRampToValueAtTime(560, pulseStart + 0.36);
+      oscillator.frequency.setValueAtTime(920, pulseStart + 0.42);
+      gain.gain.linearRampToValueAtTime(0.28, pulseStart + 0.04);
+      gain.gain.linearRampToValueAtTime(0.0001, pulseStart + 0.68);
+    }
+
+    gain.gain.setValueAtTime(0.0001, startTime + warningLength);
     oscillator.connect(gain).connect(audioContext.destination);
     oscillator.start();
-    oscillator.stop(audioContext.currentTime + 0.34);
+    oscillator.stop(startTime + warningLength);
   }
 
   async function analyze(blob, name = "camera.jpg") {
