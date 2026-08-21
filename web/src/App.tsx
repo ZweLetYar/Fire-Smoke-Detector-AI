@@ -1,34 +1,59 @@
 import { useEffect, useRef, useState } from "react";
 
+type Detection = {
+  box: [number, number, number, number];
+  label: string;
+  confidence: number;
+};
+
+type DetectionResult = {
+  detections: Detection[];
+  preview: string;
+  processed_at: string;
+};
+
+type Alert = {
+  snapshot: string;
+  timestamp: string;
+  class: string;
+  max_confidence: number | string;
+};
+
+type SourceType = "browser" | "webcam" | "esp32";
+
+type AudioContextWindow = Window & {
+  webkitAudioContext?: typeof AudioContext;
+};
+
 const API =
   import.meta.env.VITE_API_URL ||
   `${window.location.protocol}//${window.location.hostname}:8000`;
 
 export default function App() {
   const [confidence, setConfidence] = useState(0.6);
-  const [file, setFile] = useState(null);
-  const [result, setResult] = useState(null);
-  const [alerts, setAlerts] = useState([]);
+  const [file, setFile] = useState<File | null>(null);
+  const [result, setResult] = useState<DetectionResult | null>(null);
+  const [alerts, setAlerts] = useState<Alert[]>([]);
   const [status, setStatus] = useState(
     "Drop an image or use your camera to begin.",
   );
   const [loading, setLoading] = useState(false);
   const [cameraOn, setCameraOn] = useState(false);
-  const [sourceType, setSourceType] = useState("browser");
+  const [sourceType, setSourceType] = useState<SourceType>("browser");
   const [deviceId, setDeviceId] = useState("");
-  const [devices, setDevices] = useState([]);
+  const [devices, setDevices] = useState<MediaDeviceInfo[]>([]);
   const [networkSource, setNetworkSource] = useState("");
   const [streamUrl, setStreamUrl] = useState("");
   const [monitorFps, setMonitorFps] = useState(0);
   const [monitoring, setMonitoring] = useState(false);
   const [soundEnabled, setSoundEnabled] = useState(false);
-  const videoRef = useRef(null);
-  const detectionCanvasRef = useRef(null);
-  const streamRef = useRef(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const detectionCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const monitorRef = useRef(false);
   const busyRef = useRef(false);
   const fpsRef = useRef({ frames: 0, startedAt: 0 });
-  const audioContextRef = useRef(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
   const lastSoundAtRef = useRef(0);
   const soundEnabledRef = useRef(false);
 
